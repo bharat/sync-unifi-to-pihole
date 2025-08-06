@@ -312,7 +312,9 @@ curl -k -X POST "https://PIHOLE_IP/api/auth" \
 
 ## License
 
-This project is open source. See the repository for license details.
+This project is licensed under the GNU General Public License v3.0 (GPLv3). See the [LICENSE](LICENSE) file for the full license text.
+
+This license ensures that the software remains free and open source, and that any derivative works are also distributed under the same license terms.
 
 ## Contributing
 
