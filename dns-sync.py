@@ -4,6 +4,8 @@ import re
 import requests
 import argparse
 import logging
+import atexit
+from contextlib import contextmanager
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 try:
@@ -20,6 +22,9 @@ requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# Global session tracking for cleanup
+_active_pihole_sessions = []
 
 def setup_logging(log_level):
     """Configure logging based on the specified level."""
@@ -148,6 +153,35 @@ def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to fetch config from UDM API: {e}")
 
+def logout_pihole(pihole_ip, sid):
+    """Logout from Pi-hole v6.0 API to clean up the session."""
+    if not sid:
+        return
+        
+    logout_url = f"https://{pihole_ip}/api/auth"
+    headers = {
+        "accept": "application/json",
+        "sid": sid
+    }
+    
+    try:
+        response = requests.delete(logout_url, headers=headers, verify=False, timeout=10)
+        response.raise_for_status()
+        logger.debug(f"Successfully logged out from Pi-hole")
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to logout from Pi-hole: {e}")
+
+def cleanup_all_pihole_sessions():
+    """Clean up all active Pi-hole sessions on exit."""
+    global _active_pihole_sessions
+    for pihole_ip, sid in _active_pihole_sessions:
+        logger.debug(f"Cleaning up Pi-hole session on exit: {sid}")
+        logout_pihole(pihole_ip, sid)
+    _active_pihole_sessions.clear()
+
+# Register cleanup function to run on script exit
+atexit.register(cleanup_all_pihole_sessions)
+
 def authenticate_pihole(pihole_ip, pihole_password):
     """Authenticate with Pi-hole v6.0 API and return session ID."""
     auth_url = f"https://{pihole_ip}/api/auth"
@@ -176,11 +210,29 @@ def authenticate_pihole(pihole_ip, pihole_password):
         if not sid:
             raise RuntimeError("Pi-hole authentication failed: no session ID returned")
         
+        # Track this session for cleanup
+        global _active_pihole_sessions
+        _active_pihole_sessions.append((pihole_ip, sid))
+        
         logger.debug(f"Successfully authenticated with Pi-hole")
         return sid
         
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to authenticate with Pi-hole: {e}")
+
+@contextmanager
+def pihole_session(pihole_ip, pihole_password):
+    """Context manager for Pi-hole sessions that ensures cleanup."""
+    sid = None
+    try:
+        sid = authenticate_pihole(pihole_ip, pihole_password)
+        yield sid
+    finally:
+        if sid:
+            logout_pihole(pihole_ip, sid)
+            # Remove from active sessions list
+            global _active_pihole_sessions
+            _active_pihole_sessions = [(ip, s) for ip, s in _active_pihole_sessions if s != sid]
 
 def get_existing_pihole_dns_records(pihole_ip, sid):
     """Get existing DNS records from Pi-hole v6.0 API."""
@@ -213,80 +265,181 @@ def get_existing_pihole_dns_records(pihole_ip, sid):
 
 def push_dns_records_to_pihole(pihole_ip, pihole_password, leases):
     """Push local DNS records to Pi-hole using v6.0 API."""
-    # Authenticate and get session ID
-    sid = authenticate_pihole(pihole_ip, pihole_password)
-    
-    # Get existing DNS records to avoid duplicates
-    existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
-    logger.debug(f"Found {len(existing_records)} existing DNS records in Pi-hole")
-    
+    with pihole_session(pihole_ip, pihole_password) as sid:
+        # Get existing DNS records to avoid duplicates
+        existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
+        logger.debug(f"Found {len(existing_records)} existing DNS records in Pi-hole")
+        
+        headers = {
+            "accept": "application/json",
+            "sid": sid
+        }
+        
+        added_count = 0
+        skipped_count = 0
+        error_count = 0
+        
+        # Track hostnames we've seen to detect duplicates
+        seen_hostnames = {}
+        
+        for lease in leases:
+            ip = lease.get("ip")
+            hostname = lease.get("hostname")
+            if not ip or not hostname:
+                continue
+
+            fqdn = f"{hostname}.noe.menalto.com"
+            
+            # Check if record already exists with same IP
+            if existing_records.get(fqdn) == ip:
+                logger.debug(f"Skipped {fqdn} → {ip} (already exists)")
+                skipped_count += 1
+                continue
+                
+            # Check if record exists with different IP
+            if fqdn in existing_records:
+                logger.warning(f"Skipped {fqdn} → {ip} (hostname exists with different IP: {existing_records[fqdn]})")
+                skipped_count += 1
+                continue
+                
+            # Check for duplicate hostnames in current batch
+            if fqdn in seen_hostnames:
+                logger.warning(f"Skipped {fqdn} → {ip} (duplicate hostname in batch, keeping first: {seen_hostnames[fqdn]})")
+                skipped_count += 1
+                continue
+            
+            seen_hostnames[fqdn] = ip
+            
+            # Add/update the DNS record using PUT endpoint
+            # URL format: /api/config/dns%2Fhosts/{ip}%20{hostname}
+            dns_url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{ip}%20{fqdn}"
+            
+            try:
+                response = requests.put(dns_url, headers=headers, verify=False, timeout=10)
+                response.raise_for_status()
+                
+                logger.info(f"Added {fqdn} → {ip}")
+                added_count += 1
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Failed to add {fqdn} → {ip}: {e}")
+                error_count += 1
+        
+        logger.info(f"DNS sync complete: {added_count} added, {skipped_count} skipped, {error_count} errors")
+
+def delete_dns_record_from_pihole(pihole_ip, sid, fqdn):
+    """Delete a DNS record from Pi-hole v6.0 API."""
+    # URL format for deletion: DELETE /api/config/dns%2Fhosts/{entry}
+    # where entry is the full "ip hostname" string
+    delete_url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{fqdn}"
     headers = {
         "accept": "application/json",
         "sid": sid
     }
     
-    added_count = 0
-    skipped_count = 0
-    error_count = 0
-    
-    # Track hostnames we've seen to detect duplicates
-    seen_hostnames = {}
-    
-    for lease in leases:
-        ip = lease.get("ip")
-        hostname = lease.get("hostname")
-        if not ip or not hostname:
-            continue
+    try:
+        response = requests.delete(delete_url, headers=headers, verify=False, timeout=10)
+        response.raise_for_status()
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to delete {fqdn}: {e}")
+        return False
 
-        fqdn = f"{hostname}.noe.menalto.com"
-        
-        # Check if record already exists with same IP
-        if existing_records.get(fqdn) == ip:
-            logger.debug(f"Skipped {fqdn} → {ip} (already exists)")
-            skipped_count += 1
-            continue
-            
-        # Check if record exists with different IP
-        if fqdn in existing_records:
-            logger.warning(f"Skipped {fqdn} → {ip} (hostname exists with different IP: {existing_records[fqdn]})")
-            skipped_count += 1
-            continue
-            
-        # Check for duplicate hostnames in current batch
-        if fqdn in seen_hostnames:
-            logger.warning(f"Skipped {fqdn} → {ip} (duplicate hostname in batch, keeping first: {seen_hostnames[fqdn]})")
-            skipped_count += 1
-            continue
-        
-        seen_hostnames[fqdn] = ip
-        
-        # Add/update the DNS record using PUT endpoint
-        # URL format: /api/config/dns%2Fhosts/{ip}%20{hostname}
-        dns_url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{ip}%20{fqdn}"
-        
-        try:
-            response = requests.put(dns_url, headers=headers, verify=False, timeout=10)
-            response.raise_for_status()
-            
-            logger.info(f"Added {fqdn} → {ip}")
-            added_count += 1
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to add {fqdn} → {ip}: {e}")
-            error_count += 1
+def update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
+    """Update Pi-hole with entries from UDM (merge operation)."""
+    logger.debug("Fetching static DHCP leases from UDM API...")
+    leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
+    logger.info(f"Found {len(leases)} static leases from UDM")
+
+    logger.debug("Pushing local DNS records to Pi-hole...")
+    push_dns_records_to_pihole(pihole_ip, pihole_password, leases)
+
+def cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
+    """Find and optionally remove Pi-hole entries that don't exist in UDM."""
+    logger.debug("Fetching static DHCP leases from UDM API...")
+    leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
     
-    logger.info(f"DNS sync complete: {added_count} added, {skipped_count} skipped, {error_count} errors")
+    # Create a set of FQDNs that should exist (from UDM)
+    udm_fqdns = set()
+    for lease in leases:
+        hostname = lease.get("hostname")
+        if hostname:
+            fqdn = f"{hostname}.noe.menalto.com"
+            udm_fqdns.add(fqdn)
+    
+    logger.info(f"Found {len(udm_fqdns)} expected DNS entries from UDM")
+    
+    with pihole_session(pihole_ip, pihole_password) as sid:
+        # Get existing Pi-hole records
+        existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
+        
+        # Find orphaned entries (in Pi-hole but not in UDM)
+        orphaned_records = {}
+        for fqdn, ip in existing_records.items():
+            if fqdn.endswith('.noe.menalto.com') and fqdn not in udm_fqdns:
+                orphaned_records[fqdn] = ip
+        
+        if not orphaned_records:
+            logger.info("No orphaned DNS records found in Pi-hole")
+            return
+        
+        logger.info(f"Found {len(orphaned_records)} orphaned DNS records in Pi-hole:")
+        for fqdn, ip in orphaned_records.items():
+            logger.info(f"  {fqdn} → {ip}")
+        
+        # Ask for confirmation
+        print()
+        response = input(f"Delete {len(orphaned_records)} orphaned records from Pi-hole? [y/N]: ").strip().lower()
+        
+        if response not in ['y', 'yes']:
+            logger.info("Cleanup cancelled by user")
+            return
+        
+        # Delete the orphaned records
+        deleted_count = 0
+        failed_count = 0
+        
+        for fqdn, ip in orphaned_records.items():
+            logger.debug(f"Deleting {fqdn} → {ip}")
+            if delete_dns_record_from_pihole(pihole_ip, sid, f"{ip}%20{fqdn}"):
+                logger.info(f"Deleted {fqdn} → {ip}")
+                deleted_count += 1
+            else:
+                failed_count += 1
+        
+        logger.info(f"Cleanup complete: {deleted_count} deleted, {failed_count} failed")
 
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Sync DNS records from UDM SE to Pi-hole')
-    parser.add_argument(
+    
+    # Add subcommands
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # Update command
+    update_parser = subparsers.add_parser('update', help='Update Pi-hole with entries from UDM')
+    update_parser.add_argument(
         '--log-level', 
         choices=['error', 'warning', 'info', 'trace'], 
         default='info',
         help='Set the logging level (default: info)'
     )
+    
+    # Cleanup command
+    cleanup_parser = subparsers.add_parser('cleanup', help='Remove Pi-hole entries not found in UDM')
+    cleanup_parser.add_argument(
+        '--log-level', 
+        choices=['error', 'warning', 'info', 'trace'], 
+        default='info',
+        help='Set the logging level (default: info)'
+    )
+    
     args = parser.parse_args()
+    
+    # Show help if no command specified
+    if not args.command:
+        parser.print_help()
+        return 1
     
     # Setup logging
     setup_logging(args.log_level)
@@ -301,12 +454,11 @@ def main():
         logger.error("UDM_IP, UDM_PASSWORD, PIHOLE_IP, and PIHOLE_PASSWORD must be set in the environment.")
         return 1
 
-    logger.debug("Fetching static DHCP leases from UDM API...")
-    leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
-    logger.info(f"Found {len(leases)} static leases from UDM")
-
-    logger.debug("Pushing local DNS records to Pi-hole...")
-    push_dns_records_to_pihole(pihole_ip, pihole_password, leases)
+    # Execute the requested command
+    if args.command == 'update':
+        update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+    elif args.command == 'cleanup':
+        cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
     
     return 0
 
