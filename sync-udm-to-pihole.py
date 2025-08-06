@@ -38,8 +38,8 @@ def setup_logging(log_level):
     level = level_map.get(log_level.lower(), logging.INFO)
     
     # Configure logging format similar to syslog
-    # Format: dns-sync: level: message (lowercase, no timestamps since this is interactive)
-    formatter = logging.Formatter('dns-sync: %(levelname)s: %(message)s')
+    # Format: sync-udm-to-pihole: level: message (lowercase, no timestamps since this is interactive)
+    formatter = logging.Formatter('sync-udm-to-pihole: %(levelname)s: %(message)s')
     
     # Custom formatter to use lowercase level names
     class LowercaseFormatter(logging.Formatter):
@@ -48,7 +48,7 @@ def setup_logging(log_level):
             record.levelname = record.levelname.lower()
             return super().format(record)
     
-    formatter = LowercaseFormatter('dns-sync: %(levelname)s: %(message)s')
+    formatter = LowercaseFormatter('sync-udm-to-pihole: %(levelname)s: %(message)s')
     
     # Set up console handler
     console_handler = logging.StreamHandler()
