@@ -249,14 +249,15 @@ def get_existing_pihole_dns_records(pihole_ip, sid):
         data = response.json()
         hosts = data.get("config", {}).get("dns", {}).get("hosts", [])
         
-        # Parse existing records into a dict {hostname: ip}
-        existing_records = {}
+        # Parse existing records into a list of (hostname, ip) tuples
+        # This preserves multiple entries with the same hostname
+        existing_records = []
         for host_entry in hosts:
             # Format: "192.168.0.19 dns1.menalto.com"
             parts = host_entry.strip().split()
             if len(parts) >= 2:
                 ip, hostname = parts[0], parts[1]
-                existing_records[hostname] = ip
+                existing_records.append((hostname, ip))
         
         return existing_records
         
@@ -269,6 +270,9 @@ def push_dns_records_to_pihole(pihole_ip, pihole_password, leases):
         # Get existing DNS records to avoid duplicates
         existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
         logger.debug(f"Found {len(existing_records)} existing DNS records in Pi-hole")
+        
+        # Convert list of tuples to a set of (hostname, ip) pairs for fast lookup
+        existing_pairs = set(existing_records)
         
         headers = {
             "accept": "application/json",
@@ -290,15 +294,16 @@ def push_dns_records_to_pihole(pihole_ip, pihole_password, leases):
 
             fqdn = f"{hostname}.noe.menalto.com"
             
-            # Check if record already exists with same IP
-            if existing_records.get(fqdn) == ip:
+            # Check if exact record already exists (same hostname and IP)
+            if (fqdn, ip) in existing_pairs:
                 logger.debug(f"Skipped {fqdn} → {ip} (already exists)")
                 skipped_count += 1
                 continue
                 
-            # Check if record exists with different IP
-            if fqdn in existing_records:
-                logger.warning(f"Skipped {fqdn} → {ip} (hostname exists with different IP: {existing_records[fqdn]})")
+            # Check if hostname exists with different IP
+            existing_ips_for_hostname = [record_ip for record_hostname, record_ip in existing_records if record_hostname == fqdn]
+            if existing_ips_for_hostname:
+                logger.warning(f"Skipped {fqdn} → {ip} (hostname exists with different IPs: {', '.join(existing_ips_for_hostname)})")
                 skipped_count += 1
                 continue
                 
@@ -374,18 +379,19 @@ def cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
         existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
         
         # Find orphaned entries (in Pi-hole but not in UDM)
-        orphaned_records = {}
-        for fqdn, ip in existing_records.items():
-            if fqdn.endswith('.noe.menalto.com') and fqdn not in udm_fqdns:
-                orphaned_records[fqdn] = ip
+        # existing_records is now a list of (hostname, ip) tuples
+        orphaned_records = []
+        for hostname, ip in existing_records:
+            if hostname.endswith('.noe.menalto.com') and hostname not in udm_fqdns:
+                orphaned_records.append((hostname, ip))
         
         if not orphaned_records:
             logger.info("No orphaned DNS records found in Pi-hole")
             return
         
         logger.info(f"Found {len(orphaned_records)} orphaned DNS records in Pi-hole:")
-        for fqdn, ip in orphaned_records.items():
-            logger.info(f"  {fqdn} → {ip}")
+        for hostname, ip in orphaned_records:
+            logger.info(f"  {hostname} → {ip}")
         
         # Ask for confirmation
         print()
@@ -399,10 +405,10 @@ def cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
         deleted_count = 0
         failed_count = 0
         
-        for fqdn, ip in orphaned_records.items():
-            logger.debug(f"Deleting {fqdn} → {ip}")
-            if delete_dns_record_from_pihole(pihole_ip, sid, f"{ip}%20{fqdn}"):
-                logger.info(f"Deleted {fqdn} → {ip}")
+        for hostname, ip in orphaned_records:
+            logger.debug(f"Deleting {hostname} → {ip}")
+            if delete_dns_record_from_pihole(pihole_ip, sid, f"{ip}%20{hostname}"):
+                logger.info(f"Deleted {hostname} → {ip}")
                 deleted_count += 1
             else:
                 failed_count += 1
