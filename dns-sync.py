@@ -1,10 +1,97 @@
 import os
 import json
+import re
 import requests
+import argparse
+import logging
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
+
+try:
+    from dotenv import load_dotenv
+    # Load environment variables from .env files
+    load_dotenv('.env.local')  # Load .env.local first (higher priority)
+    load_dotenv('.env')        # Load .env as fallback
+except ImportError:
+    # dotenv not installed, skip loading .env files
+    pass
 
 # Disable SSL warnings for UDM API calls
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+def setup_logging(log_level):
+    """Configure logging based on the specified level."""
+    level_map = {
+        'error': logging.ERROR,
+        'warning': logging.WARNING,
+        'info': logging.INFO,
+        'trace': logging.DEBUG
+    }
+    
+    level = level_map.get(log_level.lower(), logging.INFO)
+    
+    # Configure logging format similar to syslog
+    # Format: dns-sync: level: message (lowercase, no timestamps since this is interactive)
+    formatter = logging.Formatter('dns-sync: %(levelname)s: %(message)s')
+    
+    # Custom formatter to use lowercase level names
+    class LowercaseFormatter(logging.Formatter):
+        def format(self, record):
+            # Convert levelname to lowercase for syslog-like appearance
+            record.levelname = record.levelname.lower()
+            return super().format(record)
+    
+    formatter = LowercaseFormatter('dns-sync: %(levelname)s: %(message)s')
+    
+    # Set up console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    
+    # Configure logger
+    logger.setLevel(level)
+    logger.addHandler(console_handler)
+    
+    # Also configure root logger to suppress noise from other modules
+    logging.getLogger().setLevel(level)
+
+def normalize_hostname(hostname):
+    """
+    Normalize hostname to conform to RFC 1123 (ISO hostname standards).
+    
+    Rules:
+    - Only alphanumeric characters and hyphens
+    - Cannot start or end with hyphen
+    - Maximum 63 characters per label
+    - Case insensitive (convert to lowercase)
+    """
+    if not hostname:
+        return ""
+    
+    # Convert to lowercase
+    hostname = hostname.lower()
+    
+    # Replace any non-alphanumeric characters (except hyphens) with hyphens
+    hostname = re.sub(r'[^a-z0-9-]', '-', hostname)
+    
+    # Remove consecutive hyphens
+    hostname = re.sub(r'-+', '-', hostname)
+    
+    # Remove leading and trailing hyphens
+    hostname = hostname.strip('-')
+    
+    # Truncate to 63 characters (RFC limit for a single label)
+    hostname = hostname[:63]
+    
+    # Ensure it doesn't end with a hyphen after truncation
+    hostname = hostname.rstrip('-')
+    
+    # Ensure hostname is not empty and doesn't start with a digit (optional, some systems require this)
+    if not hostname or hostname[0].isdigit():
+        hostname = f"device-{hostname}" if hostname else "device"
+    
+    return hostname
 
 def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
     """Fetch static DHCP leases from UDM using REST API."""
@@ -45,22 +132,106 @@ def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
         leases = []
         for user in data.get("data", []):
             if user.get("use_fixedip", False) and user.get("fixed_ip"):
+                raw_hostname = user.get("name") or user.get("hostname")
+                normalized_hostname = normalize_hostname(raw_hostname)
+                
                 lease = {
                     "ip": user.get("fixed_ip"),
-                    "hostname": user.get("hostname") or user.get("name"),
+                    "hostname": normalized_hostname,
                     "mac": user.get("mac")
                 }
                 if lease["ip"] and lease["hostname"]:
                     leases.append(lease)
-        
+
         return leases
-        
+    
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to fetch config from UDM API: {e}")
 
-def push_dns_records_to_pihole(pihole_url, pihole_token, leases):
-    """Push local DNS records to Pi-hole using its API."""
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+def authenticate_pihole(pihole_ip, pihole_password):
+    """Authenticate with Pi-hole v6.0 API and return session ID."""
+    auth_url = f"https://{pihole_ip}/api/auth"
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json"
+    }
+    
+    try:
+        response = requests.post(
+            auth_url,
+            headers=headers,
+            json={"password": pihole_password},  # Send password as JSON object
+            verify=False,
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        auth_data = response.json()
+        session_info = auth_data.get("session", {})
+        
+        if not session_info.get("valid", False):
+            raise RuntimeError("Pi-hole authentication failed: invalid session")
+        
+        sid = session_info.get("sid")
+        if not sid:
+            raise RuntimeError("Pi-hole authentication failed: no session ID returned")
+        
+        logger.debug(f"Successfully authenticated with Pi-hole")
+        return sid
+        
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to authenticate with Pi-hole: {e}")
+
+def get_existing_pihole_dns_records(pihole_ip, sid):
+    """Get existing DNS records from Pi-hole v6.0 API."""
+    dns_url = f"https://{pihole_ip}/api/config/dns%2Fhosts"
+    headers = {
+        "accept": "application/json",
+        "sid": sid
+    }
+    
+    try:
+        response = requests.get(dns_url, headers=headers, verify=False, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        hosts = data.get("config", {}).get("dns", {}).get("hosts", [])
+        
+        # Parse existing records into a dict {hostname: ip}
+        existing_records = {}
+        for host_entry in hosts:
+            # Format: "192.168.0.19 dns1.menalto.com"
+            parts = host_entry.strip().split()
+            if len(parts) >= 2:
+                ip, hostname = parts[0], parts[1]
+                existing_records[hostname] = ip
+        
+        return existing_records
+        
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to get existing DNS records from Pi-hole: {e}")
+
+def push_dns_records_to_pihole(pihole_ip, pihole_password, leases):
+    """Push local DNS records to Pi-hole using v6.0 API."""
+    # Authenticate and get session ID
+    sid = authenticate_pihole(pihole_ip, pihole_password)
+    
+    # Get existing DNS records to avoid duplicates
+    existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
+    logger.debug(f"Found {len(existing_records)} existing DNS records in Pi-hole")
+    
+    headers = {
+        "accept": "application/json",
+        "sid": sid
+    }
+    
+    added_count = 0
+    skipped_count = 0
+    error_count = 0
+    
+    # Track hostnames we've seen to detect duplicates
+    seen_hostnames = {}
+    
     for lease in leases:
         ip = lease.get("ip")
         hostname = lease.get("hostname")
@@ -68,35 +239,76 @@ def push_dns_records_to_pihole(pihole_url, pihole_token, leases):
             continue
 
         fqdn = f"{hostname}.noe.menalto.com"
-        payload = {
-            "action": "add",
-            "ip": ip,
-            "domain": fqdn,
-            "token": pihole_token
-        }
-
-        resp = requests.post(f"{pihole_url}/admin/api.php", headers=headers, data=payload)
-        if resp.status_code != 200:
-            print(f"Failed to add {fqdn} → {ip}: {resp.text}")
-        else:
-            print(f"Added {fqdn} → {ip}")
+        
+        # Check if record already exists with same IP
+        if existing_records.get(fqdn) == ip:
+            logger.debug(f"Skipped {fqdn} → {ip} (already exists)")
+            skipped_count += 1
+            continue
+            
+        # Check if record exists with different IP
+        if fqdn in existing_records:
+            logger.warning(f"Skipped {fqdn} → {ip} (hostname exists with different IP: {existing_records[fqdn]})")
+            skipped_count += 1
+            continue
+            
+        # Check for duplicate hostnames in current batch
+        if fqdn in seen_hostnames:
+            logger.warning(f"Skipped {fqdn} → {ip} (duplicate hostname in batch, keeping first: {seen_hostnames[fqdn]})")
+            skipped_count += 1
+            continue
+        
+        seen_hostnames[fqdn] = ip
+        
+        # Add/update the DNS record using PUT endpoint
+        # URL format: /api/config/dns%2Fhosts/{ip}%20{hostname}
+        dns_url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{ip}%20{fqdn}"
+        
+        try:
+            response = requests.put(dns_url, headers=headers, verify=False, timeout=10)
+            response.raise_for_status()
+            
+            logger.info(f"Added {fqdn} → {ip}")
+            added_count += 1
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to add {fqdn} → {ip}: {e}")
+            error_count += 1
+    
+    logger.info(f"DNS sync complete: {added_count} added, {skipped_count} skipped, {error_count} errors")
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Sync DNS records from UDM SE to Pi-hole')
+    parser.add_argument(
+        '--log-level', 
+        choices=['error', 'warning', 'info', 'trace'], 
+        default='info',
+        help='Set the logging level (default: info)'
+    )
+    args = parser.parse_args()
+    
+    # Setup logging
+    setup_logging(args.log_level)
+    
     udm_ip = os.environ.get("UDM_IP")
     udm_user = os.environ.get("UDM_USER", "root")
     udm_password = os.environ.get("UDM_PASSWORD")
-    pihole_url = os.environ.get("PIHOLE_URL", "http://192.168.0.19")
-    pihole_token = os.environ.get("PIHOLE_TOKEN")
+    pihole_ip = os.environ.get("PIHOLE_IP")
+    pihole_password = os.environ.get("PIHOLE_PASSWORD")
 
-    if not all([udm_ip, udm_password, pihole_token]):
-        raise EnvironmentError("UDM_IP, UDM_PASSWORD, and PIHOLE_TOKEN must be set in the environment.")
+    if not all([udm_ip, udm_password, pihole_ip, pihole_password]):
+        logger.error("UDM_IP, UDM_PASSWORD, PIHOLE_IP, and PIHOLE_PASSWORD must be set in the environment.")
+        return 1
 
-    print("Fetching static DHCP leases from UDM API...")
+    logger.debug("Fetching static DHCP leases from UDM API...")
     leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
-    print(f"Found {len(leases)} static leases.")
+    logger.info(f"Found {len(leases)} static leases from UDM")
 
-    print("Pushing local DNS records to Pi-hole...")
-    push_dns_records_to_pihole(pihole_url, pihole_token, leases)
+    logger.debug("Pushing local DNS records to Pi-hole...")
+    push_dns_records_to_pihole(pihole_ip, pihole_password, leases)
+    
+    return 0
 
 if __name__ == "__main__":
-    main()
+    exit(main())
