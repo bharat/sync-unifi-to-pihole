@@ -150,6 +150,11 @@ def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
 
         return leases
     
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            raise RuntimeError(f"UDM authentication failed: incorrect username or password for user '{udm_user}'. Please check your UDM_USER and UDM_PASSWORD environment variables.")
+        else:
+            raise RuntimeError(f"Failed to fetch config from UDM API: {e}")
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to fetch config from UDM API: {e}")
 
@@ -204,7 +209,7 @@ def authenticate_pihole(pihole_ip, pihole_password):
         session_info = auth_data.get("session", {})
         
         if not session_info.get("valid", False):
-            raise RuntimeError("Pi-hole authentication failed: invalid session")
+            raise RuntimeError("Pi-hole authentication failed: incorrect password. Please check your PIHOLE_PASSWORD environment variable.")
         
         sid = session_info.get("sid")
         if not sid:
@@ -217,6 +222,11 @@ def authenticate_pihole(pihole_ip, pihole_password):
         logger.debug(f"Successfully authenticated with Pi-hole")
         return sid
         
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            raise RuntimeError("Pi-hole authentication failed: incorrect password. Please check your PIHOLE_PASSWORD environment variable.")
+        else:
+            raise RuntimeError(f"Failed to authenticate with Pi-hole: {e}")
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to authenticate with Pi-hole: {e}")
 
