@@ -471,12 +471,27 @@ def main():
         return 1
 
     # Execute the requested command
-    if args.command == 'update':
-        update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
-    elif args.command == 'cleanup':
-        cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
-    
-    return 0
+    try:
+        if args.command == 'update':
+            update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+        elif args.command == 'cleanup':
+            cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+        
+        return 0
+    except RuntimeError as e:
+        # Show clean error message without stack trace unless trace logging is enabled
+        if args.log_level.lower() == 'trace':
+            logger.exception("Command failed with error:")
+        else:
+            logger.error(str(e))
+        return 1
+    except Exception as e:
+        # For unexpected errors, always show stack trace in trace mode, otherwise show generic message
+        if args.log_level.lower() == 'trace':
+            logger.exception("Unexpected error occurred:")
+        else:
+            logger.error(f"Unexpected error: {e}")
+        return 1
 
 if __name__ == "__main__":
     exit(main())
