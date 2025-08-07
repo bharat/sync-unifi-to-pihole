@@ -151,7 +151,7 @@ def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
         return leases
     
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
+        if e.response.status_code in [401, 403]:
             raise RuntimeError(f"UDM authentication failed: incorrect username or password for user '{udm_user}'. Please check your UDM_USER and UDM_PASSWORD environment variables.")
         else:
             raise RuntimeError(f"Failed to fetch config from UDM API: {e}")
@@ -388,7 +388,7 @@ def test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_passwo
         login_response.raise_for_status()
         logger.debug("UDM authentication successful")
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
+        if e.response.status_code in [401, 403]:
             raise RuntimeError(f"UDM authentication failed: incorrect username or password for user '{udm_user}'. Please check your UDM_USER and UDM_PASSWORD environment variables.")
         else:
             raise RuntimeError(f"Failed to authenticate with UDM: {e}")
