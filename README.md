@@ -1,24 +1,32 @@
-# Sync UDM to Pi-hole
+# Sync UniFi to Pi-hole
 
-A Python script that synchronizes static DHCP lease hostnames from a UniFi Dream Machine (UDM) to Pi-hole local DNS records. This ensures that devices with static IP addresses configured in your UDM are automatically resolvable by hostname through Pi-hole.
+A Python script that synchronizes static DHCP lease hostnames from UniFi OS devices to Pi-hole local DNS records. This ensures that devices with static IP addresses configured in your UniFi controller are automatically resolvable by hostname through Pi-hole.
+
+**Compatible with all UniFi OS devices:**
+- UniFi Dream Machine (UDM)
+- UniFi Dream Machine Pro (UDM Pro) 
+- UniFi Dream Machine SE (UDM SE)
+- UniFi Cloud Gateway Ultra
+- UniFi Cloud Gateway Max
+- Any device running UniFi OS
 
 ## Features
 
 - **Automatic Hostname Normalization**: Converts device names to RFC 1123 compliant hostnames
 - **Duplicate Detection**: Prevents duplicate DNS entries and conflicts
-- **Session Management**: Proper authentication and cleanup for both UDM and Pi-hole APIs
+- **Session Management**: Proper authentication and cleanup for both UniFi and Pi-hole APIs
 - **Two Operation Modes**:
-  - `update`: Add/merge UDM static leases into Pi-hole DNS records
-  - `cleanup`: Find and optionally remove orphaned Pi-hole DNS entries not found in UDM
+  - `update`: Add/merge UniFi static leases into Pi-hole DNS records
+  - `cleanup`: Find and optionally remove orphaned Pi-hole DNS entries not found in UniFi
 - **Comprehensive Logging**: Configurable logging levels (error, warning, info, trace)
 - **Domain Suffix**: Automatically appends `.noe.menalto.com` to hostnames (configurable in code)
 
 ## Prerequisites
 
-- **UniFi Dream Machine (UDM/UDM Pro/UDM SE)** with SSH/API access
+- **UniFi OS Device** (UDM, UDM Pro, UDM SE, Cloud Gateway, etc.) with API access
 - **Pi-hole v6.0+** with web interface password set
 - **Python 3.6+**
-- Network connectivity between the machine running this script and both UDM and Pi-hole
+- Network connectivity between the machine running this script and both UniFi controller and Pi-hole
 
 ## Installation
 
@@ -41,10 +49,10 @@ A Python script that synchronizes static DHCP lease hostnames from a UniFi Dream
 
 ## Configuration
 
-### 1. UDM Setup
+### 1. UniFi Setup
 
 #### Option A: Create a Dedicated User (Recommended)
-1. **Access UDM Web Interface**: Navigate to `https://your-udm-ip`
+1. **Access UniFi Web Interface**: Navigate to `https://your-unifi-ip`
 2. **Go to Settings → Admins**
 3. **Add New Admin**:
    - **Name**: `dns-sync` (or any preferred username)
@@ -55,7 +63,7 @@ A Python script that synchronizes static DHCP lease hostnames from a UniFi Dream
 #### Option B: Use Root Account (Less Secure)
 You can use the root account, but creating a dedicated user is more secure.
 
-#### Required UDM Permissions
+#### Required UniFi Permissions
 The user needs access to:
 - Network settings (to read DHCP reservations)
 - API endpoint: `/proxy/network/api/s/default/rest/user`
@@ -87,10 +95,10 @@ cp env.example .env
 
 Edit `.env`:
 ```bash
-# UDM (UniFi Dream Machine) Configuration
-UDM_IP=192.168.1.1
-UDM_USER=dns-sync
-UDM_PASSWORD=your_udm_password_here
+# UniFi OS Configuration (UDM, UDM Pro, UDM SE, Cloud Gateway, etc.)
+UNIFI_IP=192.168.1.1
+UNIFI_USER=dns-sync
+UNIFI_PASSWORD=your_unifi_password_here
 
 # Pi-hole Configuration  
 PIHOLE_IP=192.168.1.100
@@ -106,9 +114,9 @@ The script loads `.env.local` first, then falls back to `.env` for any missing v
 #### Option C: System Environment Variables
 You can also set these as system environment variables instead of using `.env` files:
 ```bash
-export UDM_IP=192.168.1.1
-export UDM_USER=dns-sync
-export UDM_PASSWORD=your_udm_password_here
+export UNIFI_IP=192.168.1.1
+export UNIFI_USER=dns-sync
+export UNIFI_PASSWORD=your_unifi_password_here
 export PIHOLE_IP=192.168.1.100
 export PIHOLE_PASSWORD=your_pihole_admin_password_here
 ```
@@ -116,7 +124,7 @@ export PIHOLE_PASSWORD=your_pihole_admin_password_here
 ### 4. Network Configuration
 
 Ensure network connectivity:
-- **UDM API**: HTTPS access to `https://UDM_IP/api/auth/login`
+- **UniFi API**: HTTPS access to `https://UNIFI_IP/api/auth/login`
 - **Pi-hole API**: HTTPS access to `https://PIHOLE_IP/api/auth`
 - **Firewall**: Allow outbound HTTPS (443) traffic from the machine running this script
 
@@ -124,7 +132,7 @@ Ensure network connectivity:
 
 ### Basic Commands
 
-#### Update Pi-hole with UDM Static Leases
+#### Update Pi-hole with UniFi Static Leases
 ```bash
 python sync-udm-to-pihole.py update
 ```
@@ -158,7 +166,7 @@ python sync-udm-to-pihole.py cleanup --help
 ## How It Works
 
 ### Update Process
-1. **Authenticate with UDM**: Logs into UDM API using provided credentials
+1. **Authenticate with UniFi**: Logs into UniFi API using provided credentials
 2. **Fetch Static DHCP Leases**: Retrieves all configured users with fixed IP addresses
 3. **Normalize Hostnames**: Converts device names to RFC 1123 compliant hostnames
 4. **Authenticate with Pi-hole**: Logs into Pi-hole v6.0 API
@@ -167,8 +175,8 @@ python sync-udm-to-pihole.py cleanup --help
 7. **Session Cleanup**: Properly logs out of both APIs
 
 ### Cleanup Process
-1. **Fetch UDM Data**: Gets current static DHCP leases from UDM
-2. **Compare with Pi-hole**: Identifies DNS records in Pi-hole that don't exist in UDM
+1. **Fetch UniFi Data**: Gets current static DHCP leases from UniFi
+2. **Compare with Pi-hole**: Identifies DNS records in Pi-hole that don't exist in UniFi
 3. **Interactive Confirmation**: Prompts user before deleting orphaned records
 4. **Safe Deletion**: Only removes records matching the configured domain suffix
 
@@ -258,22 +266,22 @@ Failed to authenticate with Pi-hole: 401 Client Error
 - **Solution**: Verify Pi-hole admin password is correct
 - **Check**: Ensure Pi-hole web interface password is set (`sudo pihole -a -p`)
 
-#### UDM API Access Denied
+#### UniFi API Access Denied
 ```
-Failed to fetch config from UDM API: 403 Forbidden
+Failed to fetch config from UniFi API: 403 Forbidden
 ```
-- **Solution**: Verify UDM credentials and user permissions
-- **Check**: Ensure UDM user has network access permissions
+- **Solution**: Verify UniFi credentials and user permissions
+- **Check**: Ensure UniFi user has network access permissions
 
 #### Network Connectivity Issues
 ```
-Failed to authenticate with UDM: Connection timeout
+Failed to authenticate with UniFi: Connection timeout
 ```
 - **Solution**: Verify IP addresses and network connectivity
-- **Check**: Test manual access to `https://UDM_IP` and `https://PIHOLE_IP/admin`
+- **Check**: Test manual access to `https://UNIFI_IP` and `https://PIHOLE_IP/admin`
 
 #### SSL Certificate Warnings
-The script disables SSL warnings for UDM connections (common with self-signed certificates). This is normal behavior.
+The script disables SSL warnings for UniFi connections (common with self-signed certificates). This is normal behavior.
 
 ### Debug Mode
 Enable detailed logging for troubleshooting:
@@ -283,9 +291,9 @@ python sync-udm-to-pihole.py update --log-level trace
 
 ### Manual API Testing
 
-#### Test UDM API Access
+#### Test UniFi API Access
 ```bash
-curl -k -X POST "https://UDM_IP/api/auth/login" \
+curl -k -X POST "https://UNIFI_IP/api/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"username":"your_user","password":"your_password"}'
 ```
@@ -300,10 +308,10 @@ curl -k -X POST "https://PIHOLE_IP/api/auth" \
 ## Security Considerations
 
 1. **Secure Credentials**: Use environment files (`.env`) and never commit passwords to version control
-2. **Limited UDM User**: Create a dedicated read-only UDM user instead of using root
+2. **Limited UniFi User**: Create a dedicated read-only UniFi user instead of using root
 3. **Network Security**: Run on a trusted network segment with proper firewall rules
 4. **File Permissions**: Restrict access to `.env` files (`chmod 600 .env`)
-5. **Regular Updates**: Keep Pi-hole and UDM firmware updated
+5. **Regular Updates**: Keep Pi-hole and UniFi firmware updated
 
 ## Dependencies
 

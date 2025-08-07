@@ -98,15 +98,15 @@ def normalize_hostname(hostname):
     
     return hostname
 
-def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
-    """Fetch static DHCP leases from UDM using REST API."""
+def fetch_dhcp_leases_from_unifi(unifi_ip, unifi_user, unifi_password):
+    """Fetch static DHCP leases from UniFi OS using REST API."""
     session = requests.Session()
     
-    # Login to UDM API
-    login_url = f"https://{udm_ip}/api/auth/login"
+    # Login to UniFi API
+    login_url = f"https://{unifi_ip}/api/auth/login"
     login_data = {
-        "username": udm_user,
-        "password": udm_password
+        "username": unifi_user,
+        "password": unifi_password
     }
     headers = {
         "Accept": "application/json",
@@ -125,7 +125,7 @@ def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
         
         # Fetch static DHCP reservations
         # Note: This endpoint gets configured users/clients which includes static leases
-        api_url = f"https://{udm_ip}/proxy/network/api/s/default/rest/user"
+        api_url = f"https://{unifi_ip}/proxy/network/api/s/default/rest/user"
         api_response = session.get(api_url, headers=headers, verify=False, timeout=10)
         api_response.raise_for_status()
         
@@ -152,11 +152,11 @@ def fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password):
     
     except requests.exceptions.HTTPError as e:
         if e.response.status_code in [401, 403]:
-            raise RuntimeError(f"UDM authentication failed: incorrect username or password for user '{udm_user}'. Please check your UDM_USER and UDM_PASSWORD environment variables.")
+            raise RuntimeError(f"UniFi authentication failed: incorrect username or password for user '{unifi_user}'. Please check your UNIFI_USER and UNIFI_PASSWORD environment variables.")
         else:
-            raise RuntimeError(f"Failed to fetch config from UDM API: {e}")
+            raise RuntimeError(f"Failed to fetch config from UniFi API: {e}")
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Failed to fetch config from UDM API: {e}")
+        raise RuntimeError(f"Failed to fetch config from UniFi API: {e}")
 
 def logout_pihole(pihole_ip, sid):
     """Logout from Pi-hole v6.0 API to clean up the session."""
@@ -360,17 +360,17 @@ def delete_dns_record_from_pihole(pihole_ip, sid, fqdn):
         logger.error(f"Failed to delete {fqdn}: {e}")
         return False
 
-def test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
-    """Test authentication with both UDM and Pi-hole before proceeding with operations."""
-    logger.info("Testing authentication with UDM and Pi-hole...")
+def test_authentication(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password):
+    """Test authentication with both UniFi and Pi-hole before proceeding with operations."""
+    logger.info("Testing authentication with UniFi and Pi-hole...")
     
-    # Test UDM authentication
-    logger.debug("Testing UDM authentication...")
+    # Test UniFi authentication
+    logger.debug("Testing UniFi authentication...")
     session = requests.Session()
-    login_url = f"https://{udm_ip}/api/auth/login"
+    login_url = f"https://{unifi_ip}/api/auth/login"
     login_data = {
-        "username": udm_user,
-        "password": udm_password
+        "username": unifi_user,
+        "password": unifi_password
     }
     headers = {
         "Accept": "application/json",
@@ -386,14 +386,14 @@ def test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_passwo
             timeout=10
         )
         login_response.raise_for_status()
-        logger.debug("UDM authentication successful")
+        logger.debug("UniFi authentication successful")
     except requests.exceptions.HTTPError as e:
         if e.response.status_code in [401, 403]:
-            raise RuntimeError(f"UDM authentication failed: incorrect username or password for user '{udm_user}'. Please check your UDM_USER and UDM_PASSWORD environment variables.")
+            raise RuntimeError(f"UniFi authentication failed: incorrect username or password for user '{unifi_user}'. Please check your UNIFI_USER and UNIFI_PASSWORD environment variables.")
         else:
-            raise RuntimeError(f"Failed to authenticate with UDM: {e}")
+            raise RuntimeError(f"Failed to authenticate with UniFi: {e}")
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Failed to connect to UDM: {e}")
+        raise RuntimeError(f"Failed to connect to UniFi: {e}")
     
     # Test Pi-hole authentication
     logger.debug("Testing Pi-hole authentication...")
@@ -402,45 +402,45 @@ def test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_passwo
     
     logger.info("Authentication test completed successfully")
 
-def update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
-    """Update Pi-hole with entries from UDM (merge operation)."""
+def update_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password):
+    """Update Pi-hole with entries from UniFi (merge operation)."""
     # Test authentication with both systems first
-    test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+    test_authentication(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
     
-    logger.debug("Fetching static DHCP leases from UDM API...")
-    leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
-    logger.info(f"Found {len(leases)} static leases from UDM")
+    logger.debug("Fetching static DHCP leases from UniFi API...")
+    leases = fetch_dhcp_leases_from_unifi(unifi_ip, unifi_user, unifi_password)
+    logger.info(f"Found {len(leases)} static leases from UniFi")
 
     logger.debug("Pushing local DNS records to Pi-hole...")
     push_dns_records_to_pihole(pihole_ip, pihole_password, leases)
 
-def cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
-    """Find and optionally remove Pi-hole entries that don't exist in UDM."""
+def cleanup_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password):
+    """Find and optionally remove Pi-hole entries that don't exist in UniFi."""
     # Test authentication with both systems first
-    test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+    test_authentication(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
     
-    logger.debug("Fetching static DHCP leases from UDM API...")
-    leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
+    logger.debug("Fetching static DHCP leases from UniFi API...")
+    leases = fetch_dhcp_leases_from_unifi(unifi_ip, unifi_user, unifi_password)
     
-    # Create a set of FQDNs that should exist (from UDM)
-    udm_fqdns = set()
+    # Create a set of FQDNs that should exist (from UniFi)
+    unifi_fqdns = set()
     for lease in leases:
         hostname = lease.get("hostname")
         if hostname:
             fqdn = f"{hostname}.noe.menalto.com"
-            udm_fqdns.add(fqdn)
+            unifi_fqdns.add(fqdn)
     
-    logger.info(f"Found {len(udm_fqdns)} expected DNS entries from UDM")
+    logger.info(f"Found {len(unifi_fqdns)} expected DNS entries from UniFi")
     
     with pihole_session(pihole_ip, pihole_password) as sid:
         # Get existing Pi-hole records
         existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
         
-        # Find orphaned entries (in Pi-hole but not in UDM)
+        # Find orphaned entries (in Pi-hole but not in UniFi)
         # existing_records is now a list of (hostname, ip) tuples
         orphaned_records = []
         for hostname, ip in existing_records:
-            if hostname.endswith('.noe.menalto.com') and hostname not in udm_fqdns:
+            if hostname.endswith('.noe.menalto.com') and hostname not in unifi_fqdns:
                 orphaned_records.append((hostname, ip))
         
         if not orphaned_records:
@@ -475,13 +475,13 @@ def cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Sync DNS records from UDM SE to Pi-hole')
+    parser = argparse.ArgumentParser(description='Sync DNS records from UniFi OS to Pi-hole')
     
     # Add subcommands
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
     
     # Update command
-    update_parser = subparsers.add_parser('update', help='Update Pi-hole with entries from UDM')
+    update_parser = subparsers.add_parser('update', help='Update Pi-hole with entries from UniFi')
     update_parser.add_argument(
         '--log-level', 
         choices=['error', 'warning', 'info', 'trace'], 
@@ -490,7 +490,7 @@ def main():
     )
     
     # Cleanup command
-    cleanup_parser = subparsers.add_parser('cleanup', help='Remove Pi-hole entries not found in UDM')
+    cleanup_parser = subparsers.add_parser('cleanup', help='Remove Pi-hole entries not found in UniFi')
     cleanup_parser.add_argument(
         '--log-level', 
         choices=['error', 'warning', 'info', 'trace'], 
@@ -508,22 +508,22 @@ def main():
     # Setup logging
     setup_logging(args.log_level)
     
-    udm_ip = os.environ.get("UDM_IP")
-    udm_user = os.environ.get("UDM_USER", "root")
-    udm_password = os.environ.get("UDM_PASSWORD")
+    unifi_ip = os.environ.get("UNIFI_IP")
+    unifi_user = os.environ.get("UNIFI_USER", "root")
+    unifi_password = os.environ.get("UNIFI_PASSWORD")
     pihole_ip = os.environ.get("PIHOLE_IP")
     pihole_password = os.environ.get("PIHOLE_PASSWORD")
 
-    if not all([udm_ip, udm_password, pihole_ip, pihole_password]):
-        logger.error("UDM_IP, UDM_PASSWORD, PIHOLE_IP, and PIHOLE_PASSWORD must be set in the environment.")
+    if not all([unifi_ip, unifi_password, pihole_ip, pihole_password]):
+        logger.error("UNIFI_IP, UNIFI_PASSWORD, PIHOLE_IP, and PIHOLE_PASSWORD must be set in the environment.")
         return 1
 
     # Execute the requested command
     try:
         if args.command == 'update':
-            update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+            update_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
         elif args.command == 'cleanup':
-            cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+            cleanup_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
         
         return 0
     except RuntimeError as e:
