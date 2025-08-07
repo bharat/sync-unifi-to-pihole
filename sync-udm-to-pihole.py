@@ -360,8 +360,53 @@ def delete_dns_record_from_pihole(pihole_ip, sid, fqdn):
         logger.error(f"Failed to delete {fqdn}: {e}")
         return False
 
+def test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
+    """Test authentication with both UDM and Pi-hole before proceeding with operations."""
+    logger.info("Testing authentication with UDM and Pi-hole...")
+    
+    # Test UDM authentication
+    logger.debug("Testing UDM authentication...")
+    session = requests.Session()
+    login_url = f"https://{udm_ip}/api/auth/login"
+    login_data = {
+        "username": udm_user,
+        "password": udm_password
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        login_response = session.post(
+            login_url, 
+            headers=headers, 
+            json=login_data, 
+            verify=False, 
+            timeout=10
+        )
+        login_response.raise_for_status()
+        logger.debug("UDM authentication successful")
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 401:
+            raise RuntimeError(f"UDM authentication failed: incorrect username or password for user '{udm_user}'. Please check your UDM_USER and UDM_PASSWORD environment variables.")
+        else:
+            raise RuntimeError(f"Failed to authenticate with UDM: {e}")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to connect to UDM: {e}")
+    
+    # Test Pi-hole authentication
+    logger.debug("Testing Pi-hole authentication...")
+    with pihole_session(pihole_ip, pihole_password) as sid:
+        logger.debug("Pi-hole authentication successful")
+    
+    logger.info("Authentication test completed successfully")
+
 def update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
     """Update Pi-hole with entries from UDM (merge operation)."""
+    # Test authentication with both systems first
+    test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+    
     logger.debug("Fetching static DHCP leases from UDM API...")
     leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
     logger.info(f"Found {len(leases)} static leases from UDM")
@@ -371,6 +416,9 @@ def update_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
 
 def cleanup_command(udm_ip, udm_user, udm_password, pihole_ip, pihole_password):
     """Find and optionally remove Pi-hole entries that don't exist in UDM."""
+    # Test authentication with both systems first
+    test_authentication(udm_ip, udm_user, udm_password, pihole_ip, pihole_password)
+    
     logger.debug("Fetching static DHCP leases from UDM API...")
     leases = fetch_dhcp_leases_from_udm(udm_ip, udm_user, udm_password)
     
