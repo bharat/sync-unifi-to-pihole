@@ -134,12 +134,12 @@ Ensure network connectivity:
 
 #### Update Pi-hole with UniFi Static Leases
 ```bash
-python sync-udm-to-pihole.py update
+python sync-unifi-to-pihole.py update
 ```
 
 #### Find and Remove Orphaned DNS Records
 ```bash
-python sync-udm-to-pihole.py cleanup
+python sync-unifi-to-pihole.py cleanup
 ```
 
 ### Advanced Options
@@ -147,20 +147,20 @@ python sync-udm-to-pihole.py cleanup
 #### Logging Levels
 ```bash
 # Minimal output (errors only)
-python sync-udm-to-pihole.py update --log-level error
+python sync-unifi-to-pihole.py update --log-level error
 
 # Verbose output (includes debug information)
-python sync-udm-to-pihole.py update --log-level trace
+python sync-unifi-to-pihole.py update --log-level trace
 
 # Default informational output
-python sync-udm-to-pihole.py update --log-level info
+python sync-unifi-to-pihole.py update --log-level info
 ```
 
 #### Help
 ```bash
-python sync-udm-to-pihole.py --help
-python sync-udm-to-pihole.py update --help
-python sync-udm-to-pihole.py cleanup --help
+python sync-unifi-to-pihole.py --help
+python sync-unifi-to-pihole.py update --help
+python sync-unifi-to-pihole.py cleanup --help
 ```
 
 ## How It Works
@@ -197,7 +197,7 @@ Example transformations:
 ## Customization
 
 ### Change Domain Suffix
-Edit line 295 in `sync-udm-to-pihole.py`:
+Edit line 295 in `sync-unifi-to-pihole.py`:
 ```python
 fqdn = f"{hostname}.your-domain.com"  # Change this line
 ```
@@ -217,7 +217,7 @@ Edit the `normalize_hostname()` function (lines 64-99) to customize hostname pro
 Run sync every hour:
 ```bash
 # Add to crontab (crontab -e)
-0 * * * * /path/to/sync-udm-to-pihole/venv/bin/python /path/to/sync-udm-to-pihole/sync-udm-to-pihole.py update --log-level warning
+0 * * * * /path/to/sync-udm-to-pihole/venv/bin/python /path/to/sync-udm-to-pihole/sync-unifi-to-pihole.py update --log-level warning
 ```
 
 ### Systemd Timer Example
@@ -232,7 +232,7 @@ Type=oneshot
 User=your-user
 WorkingDirectory=/path/to/sync-udm-to-pihole
 Environment=PATH=/path/to/sync-udm-to-pihole/venv/bin
-ExecStart=/path/to/sync-udm-to-pihole/venv/bin/python sync-udm-to-pihole.py update --log-level warning
+ExecStart=/path/to/sync-udm-to-pihole/venv/bin/python sync-unifi-to-pihole.py update --log-level warning
 ```
 
 Create `/etc/systemd/system/udm-pihole-sync.timer`:
@@ -286,7 +286,7 @@ The script disables SSL warnings for UniFi connections (common with self-signed 
 ### Debug Mode
 Enable detailed logging for troubleshooting:
 ```bash
-python sync-udm-to-pihole.py update --log-level trace
+python sync-unifi-to-pihole.py update --log-level trace
 ```
 
 ### Manual API Testing
