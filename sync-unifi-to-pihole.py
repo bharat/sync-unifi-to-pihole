@@ -454,7 +454,7 @@ def cleanup_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_pass
             return
 
         logger.info(f"Found {len(orphaned_records)} orphaned DNS records in Pi-hole:")
-        for hostname, ip in orphaned_records:
+        for hostname, old_ip, _ in orphaned_records:
             logger.info(f"  {hostname} → {ip}")
 
         logger.info(f"Found {len(mismatched_records)} mismatched DNS records in Pi-hole:")
