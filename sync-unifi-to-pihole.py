@@ -38,7 +38,6 @@ def setup_logging(log_level):
     level = level_map.get(log_level.lower(), logging.INFO)
 
     # Configure logging format similar to syslog
-    # Format: sync-udm-to-pihole: level: message (lowercase, no timestamps since this is interactive)
     formatter = logging.Formatter('sync-udm-to-pihole: %(levelname)s: %(message)s')
 
     # Custom formatter to use lowercase level names
@@ -124,7 +123,6 @@ def fetch_dhcp_leases_from_unifi(unifi_ip, unifi_user, unifi_password):
         login_response.raise_for_status()
 
         # Fetch static DHCP reservations
-        # Note: This endpoint gets configured users/clients which includes static leases
         api_url = f"https://{unifi_ip}/proxy/network/api/s/default/rest/user"
         api_response = session.get(api_url, headers=headers, verify=False, timeout=10)
         api_response.raise_for_status()
@@ -199,7 +197,7 @@ def authenticate_pihole(pihole_ip, pihole_password):
         response = requests.post(
             auth_url,
             headers=headers,
-            json={"password": pihole_password},  # Send password as JSON object
+            json={"password": pihole_password},
             verify=False,
             timeout=10
         )
@@ -260,7 +258,6 @@ def get_existing_pihole_dns_records(pihole_ip, sid):
         hosts = data.get("config", {}).get("dns", {}).get("hosts", [])
 
         # Parse existing records into a list of (hostname, ip) tuples
-        # This preserves multiple entries with the same hostname
         existing_records = []
         for host_entry in hosts:
             # Format: "192.168.0.19 dns1.menalto.com"
@@ -274,234 +271,84 @@ def get_existing_pihole_dns_records(pihole_ip, sid):
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to get existing DNS records from Pi-hole: {e}")
 
-def push_dns_records_to_pihole(pihole_ip, pihole_password, leases):
-    """Push local DNS records to Pi-hole using v6.0 API."""
-    with pihole_session(pihole_ip, pihole_password) as sid:
-        # Get existing DNS records to avoid duplicates
-        existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
-        logger.debug(f"Found {len(existing_records)} existing DNS records in Pi-hole")
-
-        # Convert list of tuples to a set of (hostname, ip) pairs for fast lookup
-        existing_pairs = set(existing_records)
-
-        headers = {
-            "accept": "application/json",
-            "sid": sid
-        }
-
-        added_count = 0
-        skipped_count = 0
-        error_count = 0
-
-        # Track hostnames we've seen to detect duplicates
-        seen_hostnames = {}
-
-        for lease in leases:
-            ip = lease.get("ip")
-            hostname = lease.get("hostname")
-            if not ip or not hostname:
-                continue
-
-            fqdn = f"{hostname}.noe.menalto.com"
-
-            # Check if exact record already exists (same hostname and IP)
-            if (fqdn, ip) in existing_pairs:
-                logger.debug(f"Skipped {fqdn} → {ip} (already exists)")
-                skipped_count += 1
-                continue
-
-            # Check if hostname exists with different IP
-            existing_ips_for_hostname = [record_ip for record_hostname, record_ip in existing_records if record_hostname == fqdn]
-            if existing_ips_for_hostname:
-                logger.warning(f"Skipped {fqdn} → {ip} (hostname exists with different IPs: {', '.join(existing_ips_for_hostname)})")
-                skipped_count += 1
-                continue
-
-            # Check for duplicate hostnames in current batch
-            if fqdn in seen_hostnames:
-                logger.warning(f"Skipped {fqdn} → {ip} (duplicate hostname in batch, keeping first: {seen_hostnames[fqdn]})")
-                skipped_count += 1
-                continue
-
-            seen_hostnames[fqdn] = ip
-
-            # Add/update the DNS record using PUT endpoint
-            # URL format: /api/config/dns%2Fhosts/{ip}%20{hostname}
-            dns_url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{ip}%20{fqdn}"
-
-            try:
-                response = requests.put(dns_url, headers=headers, verify=False, timeout=10)
-                response.raise_for_status()
-
-                logger.info(f"Added {fqdn} → {ip}")
-                added_count += 1
-
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Failed to add {fqdn} → {ip}: {e}")
-                error_count += 1
-
-        logger.info(f"DNS sync complete: {added_count} added, {skipped_count} skipped, {error_count} errors")
-
-def delete_dns_record_from_pihole(pihole_ip, sid, fqdn):
-    """Delete a DNS record from Pi-hole v6.0 API."""
-    # URL format for deletion: DELETE /api/config/dns%2Fhosts/{entry}
-    # where entry is the full "ip hostname" string
-    delete_url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{fqdn}"
-    headers = {
-        "accept": "application/json",
-        "sid": sid
-    }
-
-    try:
-        response = requests.delete(delete_url, headers=headers, verify=False, timeout=10)
-        response.raise_for_status()
-        return True
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to delete {fqdn}: {e}")
-        return False
-
-def test_authentication(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password):
-    """Test authentication with both UniFi and Pi-hole before proceeding with operations."""
-    logger.info("Testing authentication with UniFi and Pi-hole...")
-
-    # Test UniFi authentication
-    logger.debug("Testing UniFi authentication...")
-    session = requests.Session()
-    login_url = f"https://{unifi_ip}/api/auth/login"
-    login_data = {
-        "username": unifi_user,
-        "password": unifi_password
-    }
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-
-    try:
-        login_response = session.post(
-            login_url,
-            headers=headers,
-            json=login_data,
-            verify=False,
-            timeout=10
-        )
-        login_response.raise_for_status()
-        logger.debug("UniFi authentication successful")
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code in [401, 403]:
-            raise RuntimeError(f"UniFi authentication failed: incorrect username or password for user '{unifi_user}'. Please check your UNIFI_USER and UNIFI_PASSWORD environment variables.")
-        else:
-            raise RuntimeError(f"Failed to authenticate with UniFi: {e}")
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Failed to connect to UniFi: {e}")
-
-    # Test Pi-hole authentication
-    logger.debug("Testing Pi-hole authentication...")
-    with pihole_session(pihole_ip, pihole_password) as sid:
-        logger.debug("Pi-hole authentication successful")
-
-    logger.info("Authentication test completed successfully")
-
-def update_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password):
-    """Update Pi-hole with entries from UniFi (merge operation)."""
-    # Test authentication with both systems first
-    test_authentication(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
-
+def sync(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password, domain):
+    """Sync Pi-hole DNS records with UniFi fixed leases for the specified domain."""
+    logger.info(f"Starting sync for domain: {domain}")
+    
+    # Fetch UniFi leases
     logger.debug("Fetching static DHCP leases from UniFi API...")
     leases = fetch_dhcp_leases_from_unifi(unifi_ip, unifi_user, unifi_password)
     logger.info(f"Found {len(leases)} static leases from UniFi")
 
-    logger.debug("Pushing local DNS records to Pi-hole...")
-    push_dns_records_to_pihole(pihole_ip, pihole_password, leases)
-
-def cleanup_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password):
-    """Find and optionally remove Pi-hole entries that don't exist in UniFi."""
-    # Test authentication with both systems first
-    test_authentication(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
-
-    logger.debug("Fetching static DHCP leases from UniFi API...")
-    leases = fetch_dhcp_leases_from_unifi(unifi_ip, unifi_user, unifi_password)
-
-    # Create a set of FQDNs that should exist (from UniFi)
-    unifi_entries = {}
+    # Build expected set from UniFi leases
+    expected = set()
     for lease in leases:
         hostname = lease.get("hostname")
-        if hostname:
-            fqdn = f"{hostname}.noe.menalto.com"
-            unifi_entries[fqdn] = lease.get("ip")
+        ip = lease.get("ip")
+        if not hostname or not ip:
+            continue
+        fqdn = f"{hostname}.{domain}"
+        expected.add((fqdn, ip))
 
-    logger.info(f"Found {len(unifi_entries.keys())} expected DNS entries from UniFi")
+    logger.info(f"Expected {len(expected)} DNS entries for domain {domain}")
 
     with pihole_session(pihole_ip, pihole_password) as sid:
         # Get existing Pi-hole records
-        existing_records = get_existing_pihole_dns_records(pihole_ip, sid)
+        existing_all = get_existing_pihole_dns_records(pihole_ip, sid)
+        
+        # Filter to only records for our domain
+        existing = set()
+        for hostname, ip in existing_all:
+            if hostname.endswith(f".{domain}"):
+                existing.add((hostname, ip))
 
-        # Find orphaned entries (in Pi-hole but not in UniFi) and
-        # mismatched entries (in Pi-hole with a different IP)
-        #
-        # existing_records is now a list of (hostname, ip) tuples
-        orphaned_records = []
-        mismatched_records = []
-        for hostname, ip in existing_records:
-            if hostname.endswith('.noe.menalto.com') and hostname not in unifi_entries:
-                orphaned_records.append((hostname, ip, None))
+        logger.info(f"Found {len(existing)} existing DNS records for domain {domain}")
 
-            if hostname in unifi_entries and ip != unifi_entries[hostname]:
-                mismatched_records.append((hostname, ip, unifi_entries[hostname]))
+        # Calculate deltas
+        to_add = expected - existing
+        to_remove = existing - expected
 
-        if not orphaned_records and not mismatched_records:
-            logger.info("No orphaned or mismatched DNS records found in Pi-hole")
-            return
+        logger.info(f"Sync plan: {len(to_add)} to add, {len(to_remove)} to remove")
 
-        logger.info(f"Found {len(orphaned_records)} orphaned DNS records in Pi-hole:")
-        for hostname, old_ip, _ in orphaned_records:
-            logger.info(f"  {hostname} → {ip}")
+        # Process additions and removals
+        headers = {"accept": "application/json", "sid": sid}
+        added = removed = errors = 0
 
-        logger.info(f"Found {len(mismatched_records)} mismatched DNS records in Pi-hole:")
-        for hostname, old_ip, new_ip in mismatched_records:
-            logger.info(f"  {hostname} → {old_ip} → {new_ip}")
+        # Add missing entries
+        for fqdn, ip in to_add:
+            url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{ip}%20{fqdn}"
+            try:
+                response = requests.put(url, headers=headers, verify=False, timeout=10)
+                response.raise_for_status()
+                logger.info(f"Added {fqdn} → {ip}")
+                added += 1
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Failed to add {fqdn} → {ip}: {e}")
+                errors += 1
 
-        # Ask for confirmation
-        print()
-        response = input(f"Delete {len(orphaned_records+mismatched_records)} orphaned and mismatched records from Pi-hole? [y/N]: ").strip().lower()
+        # Remove extra entries
+        for fqdn, ip in to_remove:
+            url = f"https://{pihole_ip}/api/config/dns%2Fhosts/{ip}%20{fqdn}"
+            try:
+                response = requests.delete(url, headers=headers, verify=False, timeout=10)
+                response.raise_for_status()
+                logger.warning(f"Removed {fqdn} → {ip}")
+                removed += 1
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Failed to remove {fqdn} → {ip}: {e}")
+                errors += 1
 
-        if response not in ['y', 'yes']:
-            logger.info("Cleanup cancelled by user")
-            return
-
-        # Delete the orphaned records
-        deleted_count = 0
-        failed_count = 0
-
-        for hostname, ip, _ in orphaned_records + mismatched_records:
-            logger.debug(f"Deleting {hostname} → {ip}")
-            if delete_dns_record_from_pihole(pihole_ip, sid, f"{ip}%20{hostname}"):
-                logger.info(f"Deleted {hostname} → {ip}")
-                deleted_count += 1
-            else:
-                failed_count += 1
-
-        logger.info(f"Cleanup complete: {deleted_count} deleted, {failed_count} failed")
+        logger.info(f"Sync complete: {added} added, {removed} removed, {errors} errors")
 
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Sync DNS records from UniFi OS to Pi-hole')
-
-    # Add subcommands
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-
-    # Update command
-    update_parser = subparsers.add_parser('update', help='Update Pi-hole with entries from UniFi')
-    update_parser.add_argument(
-        '--log-level',
-        choices=['error', 'warning', 'info', 'trace'],
-        default='info',
-        help='Set the logging level (default: info)'
+    parser.add_argument(
+        '--domain',
+        required=True,
+        help='Domain suffix to use for DNS records (e.g., home.example.com)'
     )
-
-    # Cleanup command
-    cleanup_parser = subparsers.add_parser('cleanup', help='Remove Pi-hole entries not found in UniFi')
-    cleanup_parser.add_argument(
+    parser.add_argument(
         '--log-level',
         choices=['error', 'warning', 'info', 'trace'],
         default='info',
@@ -510,14 +357,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Show help if no command specified
-    if not args.command:
-        parser.print_help()
-        return 1
-
     # Setup logging
     setup_logging(args.log_level)
 
+    # Get environment variables
     unifi_ip = os.environ.get("UNIFI_IP")
     unifi_user = os.environ.get("UNIFI_USER", "root")
     unifi_password = os.environ.get("UNIFI_PASSWORD")
@@ -528,13 +371,9 @@ def main():
         logger.error("UNIFI_IP, UNIFI_PASSWORD, PIHOLE_IP, and PIHOLE_PASSWORD must be set in the environment.")
         return 1
 
-    # Execute the requested command
+    # Execute sync
     try:
-        if args.command == 'update':
-            update_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
-        elif args.command == 'cleanup':
-            cleanup_command(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password)
-
+        sync(unifi_ip, unifi_user, unifi_password, pihole_ip, pihole_password, args.domain)
         return 0
     except RuntimeError as e:
         # Show clean error message without stack trace unless trace logging is enabled

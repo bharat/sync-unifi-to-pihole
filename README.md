@@ -13,13 +13,12 @@ A Python script that synchronizes static DHCP lease hostnames from UniFi OS devi
 ## Features
 
 - **Automatic Hostname Normalization**: Converts device names to RFC 1123 compliant hostnames
-- **Duplicate Detection**: Prevents duplicate DNS entries and conflicts
+- **Full Synchronization**: Automatically adds missing entries and removes orphaned entries
 - **Session Management**: Proper authentication and cleanup for both UniFi and Pi-hole APIs
-- **Two Operation Modes**:
-  - `update`: Add/merge UniFi static leases into Pi-hole DNS records
-  - `cleanup`: Find and optionally remove orphaned Pi-hole DNS entries not found in UniFi
+- **Single Command Operation**: One sync command handles all reconciliation
 - **Comprehensive Logging**: Configurable logging levels (error, warning, info, trace)
-- **Domain Suffix**: Automatically appends `.noe.menalto.com` to hostnames (configurable in code)
+- **Configurable Domain**: Specify domain suffix via command line parameter
+- **Multiple IP Support**: Handles multiple fixed IPs per hostname from UniFi
 
 ## Prerequisites
 
@@ -130,16 +129,11 @@ Ensure network connectivity:
 
 ## Usage
 
-### Basic Commands
+### Basic Command
 
-#### Update Pi-hole with UniFi Static Leases
+#### Sync Pi-hole with UniFi Static Leases
 ```bash
-python sync-unifi-to-pihole.py update
-```
-
-#### Find and Remove Orphaned DNS Records
-```bash
-python sync-unifi-to-pihole.py cleanup
+python sync-unifi-to-pihole.py --domain home.example.com
 ```
 
 ### Advanced Options
@@ -147,38 +141,36 @@ python sync-unifi-to-pihole.py cleanup
 #### Logging Levels
 ```bash
 # Minimal output (errors only)
-python sync-unifi-to-pihole.py update --log-level error
+python sync-unifi-to-pihole.py --domain home.example.com --log-level error
 
 # Verbose output (includes debug information)
-python sync-unifi-to-pihole.py update --log-level trace
+python sync-unifi-to-pihole.py --domain home.example.com --log-level trace
 
-# Default informational output
-python sync-unifi-to-pihole.py update --log-level info
+# Default informational output (shows additions)
+python sync-unifi-to-pihole.py --domain home.example.com --log-level info
+
+# Warning level (shows removals, good for cron)
+python sync-unifi-to-pihole.py --domain home.example.com --log-level warning
 ```
 
 #### Help
 ```bash
 python sync-unifi-to-pihole.py --help
-python sync-unifi-to-pihole.py update --help
-python sync-unifi-to-pihole.py cleanup --help
 ```
 
 ## How It Works
 
-### Update Process
+### Sync Process
 1. **Authenticate with UniFi**: Logs into UniFi API using provided credentials
 2. **Fetch Static DHCP Leases**: Retrieves all configured users with fixed IP addresses
 3. **Normalize Hostnames**: Converts device names to RFC 1123 compliant hostnames
-4. **Authenticate with Pi-hole**: Logs into Pi-hole v6.0 API
-5. **Check Existing Records**: Retrieves current Pi-hole DNS records to avoid duplicates
-6. **Add New Records**: Creates DNS entries in format: `hostname.noe.menalto.com → IP`
-7. **Session Cleanup**: Properly logs out of both APIs
-
-### Cleanup Process
-1. **Fetch UniFi Data**: Gets current static DHCP leases from UniFi
-2. **Compare with Pi-hole**: Identifies DNS records in Pi-hole that don't exist in UniFi
-3. **Interactive Confirmation**: Prompts user before deleting orphaned records
-4. **Safe Deletion**: Only removes records matching the configured domain suffix
+4. **Build Expected Set**: Creates expected DNS entries for the specified domain
+5. **Authenticate with Pi-hole**: Logs into Pi-hole v6.0 API
+6. **Get Existing Records**: Retrieves current Pi-hole DNS records for the domain
+7. **Calculate Deltas**: Determines what to add and what to remove
+8. **Add Missing Entries**: Creates new DNS entries (logged at INFO level)
+9. **Remove Orphaned Entries**: Deletes entries not found in UniFi (logged at WARN level)
+10. **Session Cleanup**: Properly logs out of both APIs
 
 ### Hostname Normalization
 The script automatically normalizes device hostnames to ensure DNS compatibility:
@@ -190,26 +182,20 @@ The script automatically normalizes device hostnames to ensure DNS compatibility
 - Prefixes with "device-" if hostname starts with a digit
 
 Example transformations:
-- `"John's iPhone"` → `"johns-iphone.noe.menalto.com"`
-- `"WiFi_Printer_2024"` → `"wifi-printer-2024.noe.menalto.com"`
-- `"192-test"` → `"device-192-test.noe.menalto.com"`
+- `"John's iPhone"` → `"johns-iphone.your-domain.com"`
+- `"WiFi_Printer_2024"` → `"wifi-printer-2024.your-domain.com"`
+- `"192-test"` → `"device-192-test.your-domain.com"`
 
 ## Customization
 
-### Change Domain Suffix
-Edit line 295 in `sync-unifi-to-pihole.py`:
-```python
-fqdn = f"{hostname}.your-domain.com"  # Change this line
-```
-
-Also update line 372 and 385 for cleanup functionality:
-```python
-fqdn = f"{hostname}.your-domain.com"  # Line 372
-if hostname.endswith('.your-domain.com') and hostname not in udm_fqdns:  # Line 385
+### Domain Configuration
+The domain suffix is now configurable via command line parameter:
+```bash
+python sync-unifi-to-pihole.py --domain your-domain.com
 ```
 
 ### Modify Hostname Normalization
-Edit the `normalize_hostname()` function (lines 64-99) to customize hostname processing rules.
+Edit the `normalize_hostname()` function to customize hostname processing rules.
 
 ## Automation
 
@@ -217,7 +203,7 @@ Edit the `normalize_hostname()` function (lines 64-99) to customize hostname pro
 Run sync every hour:
 ```bash
 # Add to crontab (crontab -e)
-0 * * * * /path/to/sync-udm-to-pihole/venv/bin/python /path/to/sync-udm-to-pihole/sync-unifi-to-pihole.py update --log-level warning
+0 * * * * /path/to/sync-unifi-to-pihole/venv/bin/python /path/to/sync-unifi-to-pihole/sync-unifi-to-pihole.py --domain home.example.com --log-level warning
 ```
 
 ### Systemd Timer Example
@@ -232,7 +218,7 @@ Type=oneshot
 User=your-user
 WorkingDirectory=/path/to/sync-udm-to-pihole
 Environment=PATH=/path/to/sync-udm-to-pihole/venv/bin
-ExecStart=/path/to/sync-udm-to-pihole/venv/bin/python sync-unifi-to-pihole.py update --log-level warning
+ExecStart=/path/to/sync-udm-to-pihole/venv/bin/python sync-unifi-to-pihole.py --domain home.example.com --log-level warning
 ```
 
 Create `/etc/systemd/system/udm-pihole-sync.timer`:
@@ -286,7 +272,7 @@ The script disables SSL warnings for UniFi connections (common with self-signed 
 ### Debug Mode
 Enable detailed logging for troubleshooting:
 ```bash
-python sync-unifi-to-pihole.py update --log-level trace
+python sync-unifi-to-pihole.py --domain home.example.com --log-level trace
 ```
 
 ### Manual API Testing
