@@ -339,11 +339,16 @@ def get_cloudflare_dns_records(api_token, zone_id, domain):
             page += 1
 
         except requests.exceptions.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("errors", e.response.text)
+            except Exception:
+                detail = e.response.text
             if e.response.status_code in [401, 403]:
                 raise RuntimeError(
-                    "Cloudflare authentication failed. Check your CLOUDFLARE_API_TOKEN."
+                    f"Cloudflare authentication failed. Check your CLOUDFLARE_API_TOKEN. ({detail})"
                 )
-            raise RuntimeError(f"Failed to fetch DNS records from Cloudflare: {e}")
+            raise RuntimeError(f"Cloudflare API error ({e.response.status_code}): {detail}")
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Failed to fetch DNS records from Cloudflare: {e}")
 
