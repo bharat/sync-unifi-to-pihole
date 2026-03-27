@@ -491,13 +491,13 @@ def main():
     parser.add_argument(
         '--domain',
         default=None,
-        help='Domain suffix for DNS records (e.g., home.example.com). Also settable via DOMAIN in .env'
+        help='Domain suffix for DNS records (e.g., home.example.com). Also settable via SYNC_DOMAIN in .env'
     )
     parser.add_argument(
         '--log-level',
         choices=['error', 'warning', 'info', 'trace'],
         default=None,
-        help='Logging level. Also settable via LOG_LEVEL in .env (default: info)'
+        help='Logging level. Also settable via SYNC_LOG_LEVEL in .env (default: info)'
     )
     parser.add_argument(
         '--dry-run',
@@ -509,14 +509,14 @@ def main():
     args = parser.parse_args()
 
     dry_run = args.dry_run
-    log_level = args.log_level or os.environ.get("LOG_LEVEL", "info").lower()
+    log_level = args.log_level or os.environ.get("SYNC_LOG_LEVEL", "info").lower()
     if dry_run and log_level in ('error', 'warning'):
         log_level = 'info'
     setup_logging(log_level)
 
-    domain = args.domain or os.environ.get("DOMAIN")
+    domain = args.domain or os.environ.get("SYNC_DOMAIN")
     if not domain:
-        logger.error("Domain must be specified via --domain or DOMAIN in .env")
+        logger.error("Domain must be specified via --domain or SYNC_DOMAIN in .env")
         return 1
 
     unifi_ip = os.environ.get("UNIFI_IP")
