@@ -360,6 +360,9 @@ def sync_cloudflare(api_token, zone_id, domain, expected, dry_run=False):
 
     Only records tagged with CLOUDFLARE_MANAGED_COMMENT are ever modified or
     deleted. Unmanaged records that conflict produce an error instead.
+
+    Hosts with multiple A records (e.g. dual-homed devices) are handled
+    correctly -- each (name, ip) pair is tracked independently.
     """
     logger.info(f"Syncing {len(expected)} records to Cloudflare")
 
@@ -372,61 +375,27 @@ def sync_cloudflare(api_token, zone_id, domain, expected, dry_run=False):
     cf_records = get_cloudflare_dns_records(api_token, zone_id, domain)
     logger.info(f"Found {len(cf_records)} existing A records under *.{domain} in Cloudflare")
 
-    # Partition into records we manage vs. records we don't
-    managed = {}    # name -> record dict
-    unmanaged = {}  # name -> [record dict, ...]
+    # Key by (name, ip) so multi-valued hosts are handled correctly
+    managed = {}    # (name, ip) -> record dict
+    unmanaged = {}  # (name, ip) -> record dict
     for rec in cf_records:
-        name = rec["name"]
+        key = (rec["name"], rec["content"])
         comment = rec.get("comment") or ""
         if CLOUDFLARE_MANAGED_COMMENT in comment:
-            managed[name] = rec
+            managed[key] = rec
         else:
-            unmanaged.setdefault(name, []).append(rec)
+            unmanaged[key] = rec
 
-    logger.debug(f"Cloudflare: {len(managed)} managed, {len(unmanaged)} unmanaged record names")
+    logger.debug(f"Cloudflare: {len(managed)} managed, {len(unmanaged)} unmanaged records")
 
-    added = updated = removed = errors = 0
+    added = removed = errors = 0
 
-    # --- Adds / updates ---
+    # --- Adds ---
     for fqdn, ip in expected:
-        if fqdn in managed:
-            rec = managed[fqdn]
-            if rec["content"] == ip:
-                logger.debug(f"Cloudflare: {fqdn} → {ip} already correct")
-            else:
-                if dry_run:
-                    logger.warning(f"Cloudflare: would update {fqdn} → {ip} (currently {rec['content']})")
-                    updated += 1
-                else:
-                    try:
-                        resp = requests.patch(
-                            f"{base_url}/{rec['id']}",
-                            headers=headers,
-                            json={"content": ip, "comment": CLOUDFLARE_MANAGED_COMMENT},
-                            timeout=30,
-                        )
-                        resp.raise_for_status()
-                        if not resp.json().get("success"):
-                            raise RuntimeError(resp.json().get("errors"))
-                        logger.info(f"Cloudflare: updated {fqdn} → {ip} (was {rec['content']})")
-                        updated += 1
-                    except requests.exceptions.RequestException as e:
-                        logger.error(f"Cloudflare: failed to update {fqdn}: {e}")
-                        errors += 1
-
-        elif fqdn in unmanaged:
-            matching = [r for r in unmanaged[fqdn] if r["content"] == ip]
-            if matching:
-                logger.debug(f"Cloudflare: {fqdn} → {ip} exists (unmanaged), skipping")
-            else:
-                existing_ips = ", ".join(r["content"] for r in unmanaged[fqdn])
-                logger.error(
-                    f"Cloudflare: {fqdn} already exists with IP {existing_ips} "
-                    f"(not managed by this script). Cannot set to {ip}. "
-                    f"Delete the record manually or add the comment "
-                    f"'{CLOUDFLARE_MANAGED_COMMENT}' to let this script manage it."
-                )
-                errors += 1
+        if (fqdn, ip) in managed:
+            logger.debug(f"Cloudflare: {fqdn} → {ip} already correct")
+        elif (fqdn, ip) in unmanaged:
+            logger.debug(f"Cloudflare: {fqdn} → {ip} exists (unmanaged), skipping")
         else:
             if dry_run:
                 logger.warning(f"Cloudflare: would add {fqdn} → {ip}")
@@ -452,15 +421,14 @@ def sync_cloudflare(api_token, zone_id, domain, expected, dry_run=False):
                     logger.info(f"Cloudflare: added {fqdn} → {ip}")
                     added += 1
                 except requests.exceptions.RequestException as e:
-                    logger.error(f"Cloudflare: failed to add {fqdn}: {e}")
+                    logger.error(f"Cloudflare: failed to add {fqdn} → {ip}: {e}")
                     errors += 1
 
     # --- Removals (only managed records no longer in expected) ---
-    expected_fqdns = {fqdn for fqdn, _ in expected}
-    for name, rec in managed.items():
-        if name not in expected_fqdns:
+    for (name, ip), rec in managed.items():
+        if (name, ip) not in expected:
             if dry_run:
-                logger.warning(f"Cloudflare: would remove {name} → {rec['content']}")
+                logger.warning(f"Cloudflare: would remove {name} → {ip}")
                 removed += 1
             else:
                 try:
@@ -470,18 +438,17 @@ def sync_cloudflare(api_token, zone_id, domain, expected, dry_run=False):
                     resp.raise_for_status()
                     if not resp.json().get("success"):
                         raise RuntimeError(resp.json().get("errors"))
-                    logger.warning(f"Cloudflare: removed {name} → {rec['content']}")
+                    logger.warning(f"Cloudflare: removed {name} → {ip}")
                     removed += 1
                 except requests.exceptions.RequestException as e:
-                    logger.error(f"Cloudflare: failed to remove {name}: {e}")
+                    logger.error(f"Cloudflare: failed to remove {name} → {ip}: {e}")
                     errors += 1
 
-    if dry_run and not added and not updated and not removed and not errors:
+    if dry_run and not added and not removed and not errors:
         logger.warning("Cloudflare: already in sync, nothing to do")
 
     logger.info(
-        f"Cloudflare sync complete: {added} added, {updated} updated, "
-        f"{removed} removed, {errors} errors"
+        f"Cloudflare sync complete: {added} added, {removed} removed, {errors} errors"
     )
     return errors
 
