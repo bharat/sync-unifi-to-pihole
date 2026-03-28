@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import requests
 import argparse
 import logging
@@ -307,6 +308,44 @@ def sync_pihole(pihole_ip, pihole_password, domain, expected, dry_run=False):
 # Cloudflare
 # ---------------------------------------------------------------------------
 
+_CF_MAX_RETRIES = 3
+_CF_BACKOFF_BASE = 2  # seconds
+
+def cloudflare_request(method, url, headers, **kwargs):
+    """Wrapper around requests with retry/backoff for transient Cloudflare errors."""
+    last_exc = None
+    for attempt in range(_CF_MAX_RETRIES):
+        try:
+            resp = requests.request(method, url, headers=headers, **kwargs)
+            if resp.status_code >= 500:
+                detail = resp.text
+                try:
+                    detail = resp.json().get("errors", resp.text)
+                except Exception:
+                    pass
+                if attempt < _CF_MAX_RETRIES - 1:
+                    wait = _CF_BACKOFF_BASE * (2 ** attempt)
+                    logger.warning(
+                        f"Cloudflare returned {resp.status_code}, retrying in {wait}s "
+                        f"(attempt {attempt + 1}/{_CF_MAX_RETRIES}): {detail}"
+                    )
+                    time.sleep(wait)
+                    continue
+                resp.raise_for_status()
+            return resp
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_exc = e
+            if attempt < _CF_MAX_RETRIES - 1:
+                wait = _CF_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    f"Cloudflare request failed, retrying in {wait}s "
+                    f"(attempt {attempt + 1}/{_CF_MAX_RETRIES}): {e}"
+                )
+                time.sleep(wait)
+            else:
+                raise
+    raise last_exc
+
 def get_cloudflare_dns_records(api_token, zone_id, domain):
     """Fetch all A records under *.<domain> from Cloudflare."""
     headers = {
@@ -321,7 +360,7 @@ def get_cloudflare_dns_records(api_token, zone_id, domain):
         params = {"type": "A", "per_page": 500, "page": page}
 
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response = cloudflare_request("GET", url, headers, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
 
@@ -402,9 +441,8 @@ def sync_cloudflare(api_token, zone_id, domain, expected, dry_run=False):
                 added += 1
             else:
                 try:
-                    resp = requests.post(
-                        base_url,
-                        headers=headers,
+                    resp = cloudflare_request(
+                        "POST", base_url, headers,
                         json={
                             "type": "A",
                             "name": fqdn,
@@ -432,8 +470,8 @@ def sync_cloudflare(api_token, zone_id, domain, expected, dry_run=False):
                 removed += 1
             else:
                 try:
-                    resp = requests.delete(
-                        f"{base_url}/{rec['id']}", headers=headers, timeout=30
+                    resp = cloudflare_request(
+                        "DELETE", f"{base_url}/{rec['id']}", headers, timeout=30
                     )
                     resp.raise_for_status()
                     if not resp.json().get("success"):
