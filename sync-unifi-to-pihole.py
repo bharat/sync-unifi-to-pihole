@@ -325,7 +325,7 @@ def cloudflare_request(method, url, headers, **kwargs):
                     pass
                 if attempt < _CF_MAX_RETRIES - 1:
                     wait = _CF_BACKOFF_BASE * (2 ** attempt)
-                    logger.warning(
+                    logger.debug(
                         f"Cloudflare returned {resp.status_code}, retrying in {wait}s "
                         f"(attempt {attempt + 1}/{_CF_MAX_RETRIES}): {detail}"
                     )
@@ -337,7 +337,7 @@ def cloudflare_request(method, url, headers, **kwargs):
             last_exc = e
             if attempt < _CF_MAX_RETRIES - 1:
                 wait = _CF_BACKOFF_BASE * (2 ** attempt)
-                logger.warning(
+                logger.debug(
                     f"Cloudflare request failed, retrying in {wait}s "
                     f"(attempt {attempt + 1}/{_CF_MAX_RETRIES}): {e}"
                 )
